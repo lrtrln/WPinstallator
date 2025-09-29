@@ -100,12 +100,52 @@ function setup_apache_vhost() {
     echo -e "${green}* Apache vhost setup complete.${white}"
 }
 
+function check_mysql_database_exists() {
+    local MYSQL
+    MYSQL=$(which mysql)
+    
+    echo -e "${green}* Checking if database exists... (MySQL root password required)${white}"
+    
+    # Check if database exists
+    local db_exists
+    db_exists=$($MYSQL -uroot -p -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '$dbname';" 2>/dev/null | grep -c "$dbname" || echo "0")
+    
+    if [[ "$db_exists" -gt 0 ]]; then
+        echo -e "\n${red}========================================${white}"
+        echo -e "${red}WARNING: Database already exists!${white}"
+        echo -e "${red}========================================${white}"
+        echo -e "${yellow}* Database name: $dbname${white}"
+        
+        # Get table count
+        local table_count
+        table_count=$($MYSQL -uroot -p -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$dbname';" 2>/dev/null | tail -n1)
+        echo -e "${yellow}* Number of tables: $table_count${white}"
+        
+        echo -e "\n${red}Continuing will DROP and RECREATE this database!${white}"
+        echo -e "${red}ALL DATA WILL BE LOST!${white}\n"
+        
+        read -rp "$(echo -e "${red}Are you sure you want to drop and recreate the database? (yes/no):${white} ")" confirm_drop_db
+        
+        if [[ "$confirm_drop_db" != "yes" ]]; then
+            echo -e "${green}Installation cancelled. Database preserved.${white}"
+            exit 0
+        fi
+        
+        echo -e "${yellow}* Dropping existing database...${white}"
+        $MYSQL -uroot -p -e "DROP DATABASE \`$dbname\`;" 2>/dev/null
+        echo -e "${green}* Database dropped successfully.${white}"
+    fi
+}
+
 function install_with_mysql() {
-    echo -e "${green}* Creating database and user... (MySQL root password required)${white}"
+    # Check if database already exists
+    check_mysql_database_exists
+    
+    echo -e "${green}* Creating database and user...${white}"
     local MYSQL
     MYSQL=$(which mysql)
     Q1="CREATE DATABASE IF NOT EXISTS \`$dbname\`;"
-    Q2="GRANT USAGE ON *.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpass';"
+    Q2="CREATE USER IF NOT EXISTS '$dbuser'@'localhost' IDENTIFIED BY '$dbpass';"
     Q3="GRANT ALL PRIVILEGES ON \`$dbname\`.* TO '$dbuser'@'localhost';"
     Q4="FLUSH PRIVILEGES;"
     SQL="${Q1}${Q2}${Q3}${Q4}"
@@ -125,7 +165,46 @@ define( 'SCRIPT_DEBUG', true );
 PHP
 }
 
+function check_sqlite_database_exists() {
+    local target_dir="wp-content/database"
+    
+    # Check if SQLite database directory and files exist
+    if [[ -d "$target_dir" ]]; then
+        local db_files
+        db_files=$(find "$target_dir" -type f \( -name "*.sqlite" -o -name "*.db" -o -name ".ht.sqlite" \) 2>/dev/null)
+        
+        if [[ -n "$db_files" ]]; then
+            echo -e "\n${red}========================================${white}"
+            echo -e "${red}WARNING: SQLite database already exists!${white}"
+            echo -e "${red}========================================${white}"
+            echo -e "${yellow}* Database directory: $target_dir${white}"
+            echo -e "${yellow}* Database files found:${white}"
+            echo "$db_files" | while read -r file; do
+                local size=$(du -h "$file" | cut -f1)
+                echo -e "${yellow}  - $(basename "$file") ($size)${white}"
+            done
+            
+            echo -e "\n${red}Continuing will DELETE the existing SQLite database!${white}"
+            echo -e "${red}ALL DATA WILL BE LOST!${white}\n"
+            
+            read -rp "$(echo -e "${red}Are you sure you want to delete and recreate the database? (yes/no):${white} ")" confirm_drop_sqlite
+            
+            if [[ "$confirm_drop_sqlite" != "yes" ]]; then
+                echo -e "${green}Installation cancelled. SQLite database preserved.${white}"
+                exit 0
+            fi
+            
+            echo -e "${yellow}* Removing existing SQLite database files...${white}"
+            rm -rf "$target_dir"
+            echo -e "${green}* SQLite database removed successfully.${white}"
+        fi
+    fi
+}
+
 function install_with_sqlite() {
+    # Check if SQLite database already exists
+    check_sqlite_database_exists
+    
     echo -e "${green}* Setting up SQLite database...${white}"
     
     # Download the official WordPress SQLite plugin
@@ -216,6 +295,33 @@ function confirm_and_install() {
         mkdir -p "$folder" && cd "$folder" || { echo "Failed to create directory $folder"; exit 1; }
     fi
 
+    # Check if WordPress is already installed
+    if [[ -f "wp-config.php" ]] || [[ -f "wp-load.php" ]] || [[ -d "wp-content" ]] || [[ -d "wp-admin" ]]; then
+        echo -e "\n${red}========================================${white}"
+        echo -e "${red}WARNING: WordPress installation detected!${white}"
+        echo -e "${red}========================================${white}"
+        
+        if [[ -f "wp-config.php" ]]; then
+            echo -e "${yellow}* wp-config.php exists${white}"
+        fi
+        if [[ -d "wp-content" ]]; then
+            echo -e "${yellow}* wp-content directory exists${white}"
+        fi
+        if [[ -d "wp-admin" ]]; then
+            echo -e "${yellow}* wp-admin directory exists${white}"
+        fi
+        
+        echo -e "\n${red}Installing WordPress here will OVERWRITE existing files!${white}"
+        read -rp "$(echo -e "${red}Are you sure you want to continue? (yes/no):${white} ")" confirm_overwrite
+        
+        if [[ "$confirm_overwrite" != "yes" ]]; then
+            echo -e "${green}Installation cancelled. Your existing WordPress is safe.${white}"
+            exit 0
+        fi
+        
+        echo -e "${yellow}* Proceeding with installation (existing files will be overwritten)...${white}\n"
+    fi
+
     # Setup vhost if requested
     if [[ "$create_vhost" =~ ^[Yy]$ ]]; then
         setup_apache_vhost
@@ -241,10 +347,6 @@ function confirm_and_install() {
     fi
 
     echo -e "${green}* Post-installation setup...${white}"
-    cat > wp-cli.yml <<EOL
-apache_modules:
-   - mod_rewrite
-EOL
 
     wp rewrite structure '/%postname%/' --hard
     wp option update timezone_string "Europe/Paris"
@@ -260,8 +362,15 @@ EOL
     
     wp rewrite flush --hard
 
-    echo -e "\n${green}* WordPress installation finished! *${white}"
-    echo -e "You can now log in at ${yellow}http://$siteurl/wp-admin/${white} with user '${yellow}$adminuser${white}'. Have fun!"
+    echo -e "\n${green}========================================${white}"
+    echo -e "${green}* WordPress installation finished! *${white}"
+    echo -e "${green}========================================${white}"
+    echo -e "You can now log in at ${yellow}http://$siteurl/wp-admin/${white}"
+    echo -e "Username: ${yellow}$adminuser${white}"
+    if [[ "$db_type" == "sqlite" ]]; then
+        echo -e "\n${green}SQLite database location: wp-content/database/${white}"
+    fi
+    echo -e "${green}========================================${white}\n"
 }
 
 confirm_and_install
