@@ -49,11 +49,49 @@ function get_user_inputs() {
 
     read -rp "$(echo -e "${blue}Admin email:${white} ")" adminemail
 
+    read -rp "$(echo -e "${blue}Create Apache vhost for local development? (y/n):${white} ")" create_vhost
+
     # Validation
     if [[ -z "$pname" || -z "$dbname" || -z "$dbuser" || -z "$dbpass" || -z "$siteurl" || -z "$sitetitle" || -z "$adminuser" || -z "$adminpassword" || -z "$adminemail" ]]; then
         echo -e "${red}One or more required fields are empty. Please try again.${white}"
         return 1
     fi
+}
+
+function setup_apache_vhost() {
+    local doc_root
+    doc_root=$(pwd)
+    local vhost_file="/etc/apache2/sites-available/$siteurl.conf"
+
+    echo -e "${yellow}Sudo privileges will be required to create the vhost, edit /etc/hosts, and reload Apache.${white}"
+
+    local vhost_content="<VirtualHost *:80>
+    ServerName $siteurl
+    DocumentRoot $doc_root
+    <Directory $doc_root>
+        Options Indexes FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+    ErrorLog \${APACHE_LOG_DIR}/$siteurl-error.log
+    CustomLog \${APACHE_LOG_DIR}/$siteurl-access.log combined
+</VirtualHost>"
+
+    echo -e "${green}* Creating Apache vhost configuration...${white}"
+    echo "$vhost_content" | sudo tee "$vhost_file" > /dev/null
+
+    echo -e "${green}* Adding '$siteurl' to /etc/hosts...${white}"
+    if ! grep -q "127.0.0.1\s*$siteurl" /etc/hosts; then
+        echo "127.0.0.1 $siteurl" | sudo tee -a /etc/hosts > /dev/null
+    else
+        echo -e "${yellow}* '$siteurl' already exists in /etc/hosts. Skipping.${white}"
+    fi
+
+    echo -e "${green}* Enabling site and reloading Apache...${white}"
+    sudo a2ensite "$siteurl.conf"
+    sudo systemctl reload apache2
+
+    echo -e "${green}* Apache vhost setup complete.${white}"
 }
 
 function confirm_and_install() {
@@ -70,6 +108,9 @@ function confirm_and_install() {
         echo -e "DB Name:           $dbname"
         echo -e "DB User:           $dbuser"
         echo -e "Language:          $lang"
+        if [[ "$create_vhost" =~ ^[Yy]$ ]]; then
+            echo -e "Create Vhost:      Yes"
+        fi
         echo -e "--------------------------${white}\n"
 
         read -rp "$(echo -e "${blue}Proceed with installation? (y/n):${white} ")" run
@@ -90,6 +131,11 @@ function confirm_and_install() {
     # Create and cd into folder if specified
     if [[ -n "$folder" ]]; then
         mkdir -p "$folder" && cd "$folder" || { echo "Failed to create directory $folder"; exit 1; }
+    fi
+
+    # Setup vhost if requested
+    if [[ "$create_vhost" =~ ^[Yy]$ ]]; then
+        setup_apache_vhost
     fi
 
     echo -e "${green}* Downloading WordPress...${white}"
