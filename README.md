@@ -18,7 +18,9 @@ This script streamlines the entire setup process:
     -   Runs the WordPress installation.
 
 -   **Database Setup**:
-    -   Creates a new MySQL database and user for your project.
+    -   Supports both **MySQL** and **SQLite**.
+    -   For MySQL: Creates a new database and user.
+    -   For SQLite: Configures the WordPress SQLite Integration plugin, sets up the database directory with appropriate permissions, and creates a minimal `wp-config.php`.
 
 -   **Server Environment (Optional)**:
     -   **Apache VirtualHost**: Automatically creates and enables an Apache vhost configuration for a clean local URL (e.g., `http://myproject.local`).
@@ -38,6 +40,8 @@ This script is designed to run on a Linux environment and has the following depe
 -   A **Linux-based** operating system (e.g., Debian, Ubuntu).
 -   **WP-CLI**: Must be installed and accessible in your system's `PATH`. You can find installation instructions here.
 -   **MySQL/MariaDB**: The `mysql` command-line client is needed for database operations.
+-   **`curl` or `wget`**: Required to download the SQLite Integration plugin *if you choose SQLite*.
+-   **`unzip`**: Required to extract the SQLite Integration plugin *if you choose SQLite*.
 -   **Apache2**: Required if you want to use the automatic VirtualHost creation feature.
 -   **`sudo` privileges**: Needed to create the database, manage the Apache VHost, and edit the `/etc/hosts` file.
 
