@@ -1,9 +1,10 @@
 #!/bin/bash -e
 
-# install https://gist.github.com/xavierartot/61f7e6d7ab1e6318a1d0
-
 # Check wp-cli installed
-type wp >/dev/null 2>&1 || { echo >&2 "This script requires wp-cli but it's not installed.  Aborting."; exit 1; }
+if ! type wp >/dev/null 2>&1; then
+    echo >&2 "This script requires wp-cli but it's not installed. Aborting."
+    exit 1
+fi
 
 # colors
 blue="\033[34m"
@@ -12,107 +13,131 @@ green="\033[32m"
 white="\033[37m"
 yellow="\033[33m"
 
-echo -e "To install in a subfolder, write the folder name.\n"
-echo -e "Otherwise leave empty to install in root:"
-read -e folder
+function get_user_inputs() {
+    echo "============================================"
+    echo "WordPress Install Script"
+    echo "============================================"
 
-if [[ "$folder" != "" ]]; then
-    mkdir $folder && cd $folder
-else
-    path_arg=""
-fi
+    read -rp "$(echo -e "${blue}Enter project name:${white} ")" pname
+    # Sanitize project name to suggest it as dbname, dbuser, etc.
+    local suggested_name
+    suggested_name=$(echo "$pname" | tr -d ' ' | tr '[:upper:]' '[:lower:]')
 
-echo "============================================"
-echo "WordPress Install Script"
-echo "============================================"
+    read -rp "$(echo -e "${blue}Subfolder for installation (leave empty for current directory):${white} ")" folder
+    read -rp "$(echo -e "${blue}Database name (default: $suggested_name):${white} ")" dbname
+    dbname=${dbname:-$suggested_name}
 
-echo -e "${blue}* Project name ${white}"
-read -e pname
-echo -e "${blue}* DB name ${white}"
-read -e dbname
-echo -e "${blue}* DB user ${white}"
-read -e dbuser
-echo -e "${blue}* DB password ${white}"
-read -e dbpass
-echo -e "${blue}* Language (default en_EN) ${white}"
-read -e lang
-echo -e "${blue}Run install? (y/n) ${white}"
-read -e run
+    read -rp "$(echo -e "${blue}Database user (default: $suggested_name):${white} ")" dbuser
+    dbuser=${dbuser:-$suggested_name}
 
-if [[ "$run" == n ]]; then
-   exit
-fi
+    read -rsp "$(echo -e "${blue}Database password:${white} ")" dbpass
+    echo
 
-wp core download --locale="$lang"
+    read -rp "$(echo -e "${blue}Language (default: en_US):${white} ")" lang
+    lang=${lang:-en_US}
 
-echo "Creating MYSQL stuff. MySQL admin password required."
+    read -rp "$(echo -e "${blue}Site URL (e.g., localhost/wp, without http://):${white} ")" siteurl
 
-MYSQL=`which mysql`
+    read -rp "$(echo -e "${blue}Site title (default: $pname):${white} ")" sitetitle
+    sitetitle=${sitetitle:-$pname}
 
-Q1="CREATE DATABASE IF NOT EXISTS $dbname;"
-Q2="GRANT USAGE ON *.* TO $dbuser@localhost IDENTIFIED BY '$dbpass';"
-Q3="GRANT ALL PRIVILEGES ON $dbname.* TO $dbuser@localhost;"
-Q4="FLUSH PRIVILEGES;"
+    read -rp "$(echo -e "${blue}Admin username (default: admin):${white} ")" adminuser
+    adminuser=${adminuser:-admin}
 
-SQL="${Q1}${Q2}${Q3}${Q4}"
-$MYSQL -uroot -p -e "$SQL"
+    read -rsp "$(echo -e "${blue}Admin password:${white} ")" adminpassword
+    echo
 
-echo -e "${green}* MYSQL done :) \n ${white}*"
+    read -rp "$(echo -e "${blue}Admin email:${white} ")" adminemail
 
-echo "Running WP-CLI core config"
-wp core config --dbname=$dbname --dbuser=$dbuser --dbpass=$dbpass --extra-php <<PHP
+    # Validation
+    if [[ -z "$pname" || -z "$dbname" || -z "$dbuser" || -z "$dbpass" || -z "$siteurl" || -z "$sitetitle" || -z "$adminuser" || -z "$adminpassword" || -z "$adminemail" ]]; then
+        echo -e "${red}One or more required fields are empty. Please try again.${white}"
+        return 1
+    fi
+}
+
+function confirm_and_install() {
+    while true; do
+        get_user_inputs || continue
+
+        echo -e "\n${yellow}--- Installation Summary ---"
+        echo -e "Project Name:      $pname"
+        echo -e "Install folder:    ${folder:-. (current directory)}"
+        echo -e "Site URL:          http://$siteurl"
+        echo -e "Site Title:        $sitetitle"
+        echo -e "Admin User:        $adminuser"
+        echo -e "Admin Email:       $adminemail"
+        echo -e "DB Name:           $dbname"
+        echo -e "DB User:           $dbuser"
+        echo -e "Language:          $lang"
+        echo -e "--------------------------${white}\n"
+
+        read -rp "$(echo -e "${blue}Proceed with installation? (y/n):${white} ")" run
+
+        if [[ "$run" =~ ^[Yy]$ ]]; then
+            break
+        elif [[ "$run" =~ ^[Nn]$ ]]; then
+            read -rp "$(echo -e "${blue}Do you want to re-enter the details? (y/n):${white} ")" reenter
+            if [[ "$reenter" =~ ^[Nn]$ ]]; then
+                echo "Installation aborted."
+                exit 0
+            fi
+        else
+            echo -e "${red}Invalid input. Please enter 'y' or 'n'.${white}"
+        fi
+    done
+
+    # Create and cd into folder if specified
+    if [[ -n "$folder" ]]; then
+        mkdir -p "$folder" && cd "$folder" || { echo "Failed to create directory $folder"; exit 1; }
+    fi
+
+    echo -e "${green}* Downloading WordPress...${white}"
+    wp core download --locale="$lang"
+
+    echo -e "${green}* Creating database and user... (MySQL root password required)${white}"
+    local MYSQL
+    MYSQL=$(which mysql)
+    Q1="CREATE DATABASE IF NOT EXISTS \`$dbname\`;"
+    Q2="GRANT USAGE ON *.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpass';"
+    Q3="GRANT ALL PRIVILEGES ON \`$dbname\`.* TO '$dbuser'@'localhost';"
+    Q4="FLUSH PRIVILEGES;"
+    SQL="${Q1}${Q2}${Q3}${Q4}"
+    $MYSQL -uroot -p -e "$SQL"
+    echo -e "${green}* Database setup complete.${white}"
+
+    echo -e "${green}* Configuring wp-config.php...${white}"
+    wp core config --dbname="$dbname" --dbuser="$dbuser" --dbpass="$dbpass" --extra-php <<PHP
 define( 'WP_DEBUG', true );
 // Force display of errors and warnings
-define( "WP_DEBUG_DISPLAY", true );
-@ini_set( "display_errors", 1 );
+define( 'WP_DEBUG_DISPLAY', true );
+@ini_set( 'display_errors', 1 );
 // Enable Save Queries
-define( "SAVEQUERIES", true );
+define( 'SAVEQUERIES', true );
 // Use dev versions of core JS and CSS files (only needed if you are modifying these core files)
-define( "SCRIPT_DEBUG", true );
+define( 'SCRIPT_DEBUG', true );
 PHP
 
-echo -e "${blue}Site URL (without http://):${white}"
-read -e siteurl
+    echo -e "${green}* Installing WordPress...${white}"
+    wp core install --url="http://$siteurl" --title="$sitetitle" --admin_user="$adminuser" --admin_password="$adminpassword" --admin_email="$adminemail"
 
-echo -e "${blue}Site title:${white}"
-read -e sitetitle
-
-echo -e "${blue}WP-admin User:${white}"
-read -e adminuser
-
-echo -e "${blue}WP-admin Password:${white}"
-read -e adminpassword
-
-echo -e "${blue}WP-admin Email:${white}"
-read -e adminemail
-
-echo -e "Running WP-CLI core install"
-wp core install --url="http://$siteurl" --title="$sitetitle" --admin_user="$adminuser" --admin_password="$adminpassword" --admin_email="$adminemail"
-
-echo -e "${green}* WP core install done :) \n ${white}*"
-
-
-echo -e "Write wpcli config. \n"
-cat >> wp-cli.yml <<EOL
+    echo -e "${green}* Post-installation setup...${white}"
+    cat > wp-cli.yml <<EOL
 apache_modules:
    - mod_rewrite
 EOL
 
-# set pretty urls
-wp rewrite structure '/%postname%/' --hard
-wp rewrite flush --hard
+    wp rewrite structure '/%postname%/' --hard
+    wp option update timezone_string "Europe/Paris"
+    wp option update blog_public "0"
+    wp option update default_ping_status 'closed'
+    wp option update default_pingback_flag '0'
+    wp option update blogdescription "A new WordPress site"
+    wp plugin delete hello
+    wp rewrite flush --hard
 
-# Update WordPress options
-wp option update timezone_string "Europe/Paris"
-wp option update blog_public "off"
-wp option update default_ping_status 'closed'
-wp option update default_pingback_flag '0'
-wp option update blogdescription "This is a new project!!"
+    echo -e "\n${green}* WordPress installation finished! *${white}"
+    echo -e "You can now log in at ${yellow}http://$siteurl/wp-admin/${white} with user '${yellow}$adminuser${white}'. Have fun!"
+}
 
-# generate htaccess
-wp rewrite flush --hard
-
-wp plugin delete hello
-
-echo -e "${green}* \n WP installing finished! \n "
-echo -e "Now you can login as user you have chosen. Have fun! \n ${white}"
+confirm_and_install
